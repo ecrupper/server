@@ -667,23 +667,31 @@ func PostWebhook(c *gin.Context) {
 	// set the BuildID field
 	h.SetBuildID(b.GetID())
 
-	c.JSON(http.StatusOK, b)
-
 	// send API call to set the status on the commit
 	err = scm.FromContext(c).Status(u, b, r.GetOrg(), r.GetName())
 	if err != nil {
 		logrus.Errorf("unable to set commit status for %s/%d: %v", r.GetFullName(), b.GetNumber(), err)
 	}
 
+	item := new(types.Item)
+	item.Build = b
+	item.Pipeline = p
+	item.Repo = r
+	item.User = u
+
+	pkgBuild, _ := packageBuild(c, item)
+
+	c.JSON(http.StatusOK, pkgBuild)
+
 	// publish the build to the queue
-	go publishToQueue(
-		queue.FromGinContext(c),
-		database.FromContext(c),
-		p,
-		b,
-		r,
-		u,
-	)
+	// go publishToQueue(
+	// 	queue.FromGinContext(c),
+	// 	database.FromContext(c),
+	// 	p,
+	// 	b,
+	// 	r,
+	// 	u,
+	// )
 }
 
 // publishToQueue is a helper function that creates

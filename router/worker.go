@@ -33,6 +33,7 @@ func WorkerHandlers(base *gin.RouterGroup) {
 			w.GET("", worker.Establish(), api.GetWorker)
 			w.PUT("", perm.MustPlatformAdmin(), worker.Establish(), api.UpdateWorker)
 			w.DELETE("", perm.MustPlatformAdmin(), worker.Establish(), api.DeleteWorker)
+			w.POST("/send", perm.MustPlatformAdmin(), worker.Establish(), api.SendBuild)
 		} // end of worker endpoints
 	} // end of workers endpoints
 }

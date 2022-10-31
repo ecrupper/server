@@ -5,10 +5,17 @@
 package api
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
+	"github.com/go-vela/server/router/middleware/org"
+	"github.com/go-vela/server/router/middleware/repo"
 	"github.com/go-vela/server/router/middleware/user"
+	"github.com/go-vela/types"
 
 	"github.com/go-vela/server/database"
 	"github.com/go-vela/server/router/middleware/worker"
@@ -184,6 +191,133 @@ func GetWorker(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, w)
+}
+
+// swagger:operation POST /api/v1/workers/:worker/send builds SendBuild
+//
+// Given a queue item, send a packaged build to an available worker
+//
+// ---
+// produces:
+// - application/json
+// parameters:
+// - in: path
+//   name: repo
+//   description: Name of the repo
+//   required: true
+//   type: string
+// - in: path
+//   name: org
+//   description: Name of the org
+//   required: true
+//   type: string
+// - in: path
+//   name: host
+//   description: Name of the host
+//   required: true
+//   type: string
+// - in: body
+//   name: body
+//   description: Payload containing the queue item to send
+//   required: true
+//   schema:
+//     "$ref": "#/definitions/Item"
+// security:
+//   - ApiKeyAuth: []
+// responses:
+//   '200':
+//     description: Successfully sent the build
+//     schema:
+//       type: string
+//   '400':
+//     description: Unable to send build
+//     schema:
+//       "$ref": "#/definitions/Error"
+//   '404':
+//     description: Unable to send build
+//     schema:
+//       "$ref": "#/definitions/Error"
+//   '500':
+//     description: Unable to send build
+//     schema:
+//       "$ref": "#/definitions/Error"
+
+// SendBuild represents the API handler to send a packaged build.
+func SendBuild(c *gin.Context) {
+	// capture middleware values
+	o := org.Retrieve(c)
+	r := repo.Retrieve(c)
+	w := worker.Retrieve(c)
+
+	// capture body from API request
+	input := new(types.Item)
+
+	err := c.Bind(input)
+	if err != nil {
+		retErr := fmt.Errorf("unable to read item: %w", err)
+		util.HandleError(c, http.StatusBadRequest, retErr)
+
+		return
+	}
+
+	entry := fmt.Sprintf("%s/%d", r.GetFullName(), input.Build.GetNumber())
+
+	// update engine logger with API metadata
+	//
+	// https://pkg.go.dev/github.com/sirupsen/logrus?tab=doc#Entry.WithFields
+	logrus.WithFields(logrus.Fields{
+		"build": input.Build.GetNumber(),
+		"org":   o,
+		"repo":  r.GetName(),
+		"user":  input.User.GetName(),
+	}).Infof("sending build %s", entry)
+
+	packagedBuild, err := packageBuild(c, input)
+	if err != nil {
+		retErr := fmt.Errorf("unable to package build: %w", err)
+		util.HandleError(c, http.StatusBadRequest, retErr)
+
+		return
+	}
+
+	bytePkgBuild, err := json.Marshal(packagedBuild)
+	if err != nil {
+		logrus.Errorf("Failed to convert build to json for build %d for %s: %v", packagedBuild.Build.GetNumber(), r.GetFullName(), err)
+
+		return
+	}
+
+	reader := bytes.NewReader(bytePkgBuild)
+
+	// prepare the request to the worker
+	client := http.DefaultClient
+	client.Timeout = 30 * time.Second
+
+	// set the API endpoint path we send the request to
+	u := fmt.Sprintf("%s/api/v1/exec", w.GetAddress())
+
+	req, err := http.NewRequestWithContext(context.Background(), "POST", u, reader)
+	if err != nil {
+		retErr := fmt.Errorf("unable to form a request to %s: %w", u, err)
+		util.HandleError(c, http.StatusBadRequest, retErr)
+
+		return
+	}
+
+	// add the token to authenticate to the worker
+	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", c.MustGet("secret").(string)))
+
+	// perform the request to the worker
+	resp, err := client.Do(req)
+	if err != nil {
+		retErr := fmt.Errorf("unable to connect to %s: %w", u, err)
+		util.HandleError(c, http.StatusBadRequest, retErr)
+
+		return
+	}
+	defer resp.Body.Close()
+
+	c.JSON(http.StatusOK, packagedBuild)
 }
 
 // swagger:operation PUT /api/v1/workers/{worker} workers UpdateWorker

@@ -24,6 +24,7 @@ import (
 	"github.com/go-vela/server/router/middleware/repo"
 	"github.com/go-vela/server/router/middleware/user"
 	"github.com/go-vela/server/scm"
+	"github.com/go-vela/server/secret"
 	"github.com/go-vela/server/util"
 
 	"github.com/go-vela/types"
@@ -1558,6 +1559,76 @@ func cleanBuild(database database.Service, b *library.Build, services []*library
 			logrus.Errorf("unable to kill step %s for build %d: %v", s.GetName(), b.GetNumber(), err)
 		}
 	}
+}
+
+func packageBuild(c *gin.Context, item *types.Item) (*types.BuildPackage, error) {
+	secrets := item.Pipeline.Secrets
+	buildPackage := new(types.BuildPackage).
+		WithBuild(item.Build).
+		WithPipeline(item.Pipeline).
+		WithRepo(item.Repo).
+		WithUser(item.User).
+		WithToken("123abc")
+
+	for _, s := range secrets {
+		switch s.Type {
+		// handle org secrets
+		case constants.SecretOrg:
+			org, key, err := s.ParseOrg(item.Repo.GetOrg())
+			if err != nil {
+				return nil, err
+			}
+
+			// send API call to capture the org secret
+			//
+			// https://pkg.go.dev/github.com/go-vela/sdk-go/vela?tab=doc#SecretService.Get
+			_secret, err := secret.FromContext(c, s.Engine).Get(s.Type, org, "*", key)
+			if err != nil {
+				return nil, fmt.Errorf("unable to retrieve secret: %w", err)
+			}
+
+			buildPackage.Secrets = append(buildPackage.Secrets, _secret)
+
+		// handle repo secrets
+		case constants.SecretRepo:
+			org, repo, key, err := s.ParseRepo(item.Repo.GetOrg(), item.Repo.GetName())
+			if err != nil {
+				return nil, err
+			}
+
+			// send API call to capture the repo secret
+			//
+			// https://pkg.go.dev/github.com/go-vela/sdk-go/vela?tab=doc#SecretService.Get
+			_secret, err := secret.FromContext(c, s.Engine).Get(s.Type, org, repo, key)
+			if err != nil {
+				return nil, fmt.Errorf("unable to retrieve secret: %w", err)
+			}
+
+			buildPackage.Secrets = append(buildPackage.Secrets, _secret)
+
+		// handle shared secrets
+		case constants.SecretShared:
+			org, team, key, err := s.ParseShared()
+			if err != nil {
+				return nil, err
+			}
+
+			// send API call to capture the repo secret
+			//
+			// https://pkg.go.dev/github.com/go-vela/sdk-go/vela?tab=doc#SecretService.Get
+			_secret, err := secret.FromContext(c, s.Engine).Get(s.Type, org, team, key)
+			if err != nil {
+				return nil, fmt.Errorf("unable to retrieve secret: %w", err)
+			}
+
+			buildPackage.Secrets = append(buildPackage.Secrets, _secret)
+
+		default:
+			return nil, fmt.Errorf("unrecognized secret type: %s", s.Type)
+		}
+	}
+
+	return buildPackage, nil
 }
 
 // swagger:operation DELETE /api/v1/repos/{org}/{repo}/builds/{build}/cancel builds CancelBuild
